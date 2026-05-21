@@ -1,0 +1,58 @@
+# --- Entornos Virtuales y Dependencias ---
+venv/
+.venv/
+env/
+ENV/
+bin/
+lib/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# --- Python Cache y Temporales ---
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+build/
+local_settings.py
+*.manifest
+*.spec
+
+# --- Variables de Entorno y Secretos ---
+.env
+.env.*
+*.env
+secret_settings.py
+
+# --- IDEs y Editores de Código ---
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
+*~
+
+# --- Sistema Operativo y Archivos de Usuario ---
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# --- Archivos de Pruebas o Imágenes Locales de Test ---
+*.jpg
+*.jpeg
+*.png
+!src/
