@@ -222,7 +222,7 @@ class OllamaStrategy(ExtractorIAInterface):
                 }
             }
 
-            async with httpx.AsyncClient(timeout=300.0) as client:  # 5 minutos
+            async with httpx.AsyncClient(timeout=600.0) as client:  # 5 minutos
                 response = await client.post(self.OLLAMA_URL, json=payload)
                 response.raise_for_status()
 
