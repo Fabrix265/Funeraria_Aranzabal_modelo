@@ -6,7 +6,7 @@ ia_router = APIRouter()
 
 tareas: dict = {}
 
-@ia_router.post("/procesar-contrato", status_code=202)
+@ia_router.post("/procesar-contrato", status_code=200)
 async def procesar_contrato_con_ia(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...)
