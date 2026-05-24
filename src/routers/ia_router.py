@@ -6,7 +6,7 @@ ia_router = APIRouter()
 
 tareas: dict = {}
 
-@ia_router.post("/procesar-contrato", status_code=200)
+@ia_router.post("/process-contract", status_code=200)
 async def procesar_contrato_con_ia(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...)
@@ -30,7 +30,7 @@ async def procesar_contrato_con_ia(
     background_tasks.add_task(procesar)
     return {"tarea_id": tarea_id}
 
-@ia_router.get("/tarea/{tarea_id}")
+@ia_router.get("/task/{tarea_id}")
 def consultar_tarea(tarea_id: str):
     if tarea_id not in tareas:
         raise HTTPException(status_code=404, detail="Tarea no encontrada")
