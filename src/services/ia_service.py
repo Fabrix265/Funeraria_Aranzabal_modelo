@@ -3,6 +3,7 @@ import json
 import logging
 import base64
 import traceback
+import os
 from abc import ABC, abstractmethod
 from typing import Dict, Any
 import httpx
@@ -112,7 +113,6 @@ def limpiar_y_parsear_json(contenido: str) -> Dict[str, Any]:
 
 
 def normalizar_campos(datos: Dict[str, Any]) -> Dict[str, Any]:
-    # --- FECHA: convertir "25 de Julio del 2025" → "2025-07-25" ---
     fecha_raw = str(datos.get("fecha") or "").strip()
     if fecha_raw and not fecha_raw.startswith("20"):
         meses = {
@@ -132,10 +132,8 @@ def normalizar_campos(datos: Dict[str, Any]) -> Dict[str, Any]:
         else:
             datos["fecha"] = None
 
-    # --- DIRECCION: si el modelo devuelve un dict, extraer string útil ---
     direccion = datos.get("direccion_velacion")
     if isinstance(direccion, dict):
-        # Intenta extraer algún valor string del dict
         for v in direccion.values():
             if isinstance(v, str) and len(v) > 5:
                 datos["direccion_velacion"] = v
@@ -145,7 +143,6 @@ def normalizar_campos(datos: Dict[str, Any]) -> Dict[str, Any]:
     elif not isinstance(direccion, str):
         datos["direccion_velacion"] = None
 
-    # --- TIPO PAGO ---
     tipo_raw = str(datos.get("tipo_pago") or "").lower().strip()
     if any(p in tipo_raw for p in ["seguro", "aseguradora", "poliza"]):
         datos["tipo_pago"] = "seguro"
@@ -158,26 +155,21 @@ def normalizar_campos(datos: Dict[str, Any]) -> Dict[str, Any]:
     else:
         datos["tipo_pago"] = None
 
-    # --- CARGADORES ---
     if datos.get("cantidad_cargadores") not in [4, 6, None]:
         datos["cantidad_cargadores"] = None
 
-    # --- VEHÍCULOS ---
     validos = {"porta_ataud", "porta_flores", "mixto", "auto", "microbus"}
     raw = datos.get("ids_vehiculos_detectados", [])
     datos["ids_vehiculos_detectados"] = [v for v in raw if v in validos] if isinstance(raw, list) else []
 
-    # --- DNI ---
     dni = str(datos.get("contratante_dni") or "").strip()
     if not (dni.isdigit() and len(dni) == 8):
         datos["contratante_dni"] = None
 
-    # --- TELÉFONO ---
     telefono_raw = str(datos.get("contratante_telefono") or "").strip()
     telefono_limpio = "".join(filter(str.isdigit, telefono_raw))
     datos["contratante_telefono"] = telefono_limpio if telefono_limpio else None
 
-    # --- COLOR ATAÚD ---
     if str(datos.get("ataud_color") or "").lower() in ["null", "none", ""]:
         datos["ataud_color"] = None
 
@@ -190,11 +182,53 @@ class ExtractorIAInterface(ABC):
         pass
 
 
-# ─────────────────────────────────────────────
-# MODELO ACTIVO: minicpm-v:8b-2.6-q4_K_M
-# 36%/64% CPU/GPU — ~3 minutos por contrato
-# Mejor OCR de manuscritos en hardware actual
-# ─────────────────────────────────────────────
+class GeminiStrategy(ExtractorIAInterface):
+    def __init__(self):
+        self.api_key = os.environ.get("GEMINI_API_KEY", "")
+        self.url = (
+            f"https://generativelanguage.googleapis.com/v1beta/models/"
+            f"gemini-2.0-flash:generateContent?key={self.api_key}"
+        )
+        logger.info("Estrategia Gemini Flash inicializada.")
+
+    async def extraer_datos_contrato(self, imagen_bytes: bytes) -> Dict[str, Any]:
+        contenido = ""
+        try:
+            imagen_optimizada = preprocesar_imagen(imagen_bytes, max_dim=1600)
+            imagen_b64 = base64.b64encode(imagen_optimizada).decode("utf-8")
+
+            payload = {
+                "contents": [{
+                    "parts": [
+                        {"text": PROMPT_CONTRATO},
+                        {"inline_data": {
+                            "mime_type": "image/jpeg",
+                            "data": imagen_b64
+                        }}
+                    ]
+                }],
+                "generationConfig": {
+                    "temperature": 0.0
+                }
+            }
+
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                response = await client.post(self.url, json=payload)
+                response.raise_for_status()
+                contenido = response.json()["candidates"][0]["content"]["parts"][0]["text"]
+                logger.info(f"Respuesta de Gemini:\n{contenido}")
+                datos = limpiar_y_parsear_json(contenido)
+                return normalizar_campos(datos)
+
+        except json.JSONDecodeError:
+            logger.error(f"JSON inválido recibido:\n{contenido}")
+            raise HTTPException(status_code=422, detail="Gemini no pudo estructurar la respuesta.")
+        except Exception as e:
+            logger.error(f"Error en Gemini: {repr(e)}")
+            traceback.print_exc()
+            raise HTTPException(status_code=500, detail=f"Error en Gemini API: {repr(e)}")
+
+
 class OllamaStrategy(ExtractorIAInterface):
     def __init__(self):
         self.OLLAMA_URL = "http://localhost:11434/api/chat"
@@ -222,13 +256,11 @@ class OllamaStrategy(ExtractorIAInterface):
                 }
             }
 
-            async with httpx.AsyncClient(timeout=1200.0) as client:  # 5 minutos
+            async with httpx.AsyncClient(timeout=1200.0) as client:
                 response = await client.post(self.OLLAMA_URL, json=payload)
                 response.raise_for_status()
-
                 contenido = response.json()["message"]["content"]
                 logger.info(f"Respuesta de {self.MODEL_NAME}:\n{contenido}")
-
                 datos = limpiar_y_parsear_json(contenido)
                 return normalizar_campos(datos)
 
@@ -239,7 +271,6 @@ class OllamaStrategy(ExtractorIAInterface):
             logger.error(f"Error en procesamiento Ollama: {repr(e)}")
             traceback.print_exc()
             raise HTTPException(status_code=500, detail=f"Error en inferencia local: {repr(e)}")
-
 
 
 class MockStrategy(ExtractorIAInterface):
@@ -264,25 +295,28 @@ class MockStrategy(ExtractorIAInterface):
 
 
 # ─────────────────────────────────────────────
-# Cambia USE_MOCK = True para desarrollo rápido
-# sin esperar inferencia del modelo
+# MODO ACTIVO: gemini (recomendado)
+# Cambia a "ollama" para usar modelo local
+# Cambia a "mock" para desarrollo sin inferencia
 # ─────────────────────────────────────────────
-USE_MOCK = False
+EXTRACTOR_MODE = os.environ.get("EXTRACTOR_MODE", "gemini").lower()
 
-_ollama_instancia = None
-_mock_instancia = None
+_instancias: Dict[str, ExtractorIAInterface] = {}
 
 
 def obtener_extractor_ia() -> ExtractorIAInterface:
-    global _ollama_instancia, _mock_instancia
-    if USE_MOCK:
-        if _mock_instancia is None:
-            _mock_instancia = MockStrategy()
-        return _mock_instancia
-    else:
-        if _ollama_instancia is None:
-            _ollama_instancia = OllamaStrategy()
-        return _ollama_instancia
+    global _instancias
+    if EXTRACTOR_MODE not in _instancias:
+        if EXTRACTOR_MODE == "mock":
+            logger.info("Usando MockStrategy")
+            _instancias[EXTRACTOR_MODE] = MockStrategy()
+        elif EXTRACTOR_MODE == "gemini":
+            logger.info("Usando GeminiStrategy")
+            _instancias[EXTRACTOR_MODE] = GeminiStrategy()
+        else:
+            logger.info("Usando OllamaStrategy")
+            _instancias[EXTRACTOR_MODE] = OllamaStrategy()
+    return _instancias[EXTRACTOR_MODE]
 
 
 class IAService:
