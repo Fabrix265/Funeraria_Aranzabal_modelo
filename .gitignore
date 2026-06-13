@@ -56,3 +56,6 @@ Desktop.ini
 *.jpeg
 *.png
 !src/
+
+# --- Modelos ML ---
+src/modelos/
