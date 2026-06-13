@@ -2,16 +2,17 @@ import io
 import json
 import logging
 import base64
+import asyncio
 import traceback
 import os
-from abc import ABC, abstractmethod
-from typing import Dict, Any
+import re
+from typing import Dict, Any, List
 import httpx
 
 from PIL import Image, ImageOps, ImageFilter
 Image.MAX_IMAGE_PIXELS = None
 
-from fastapi import HTTPException, status
+from fastapi import HTTPException
 
 logger = logging.getLogger("fastapi")
 
@@ -120,7 +121,6 @@ def normalizar_campos(datos: Dict[str, Any]) -> Dict[str, Any]:
             "mayo": "05", "junio": "06", "julio": "07", "agosto": "08",
             "septiembre": "09", "octubre": "10", "noviembre": "11", "diciembre": "12"
         }
-        import re
         match = re.search(r"(\d{1,2})\s+de\s+(\w+)\s+del?\s+(\d{4})", fecha_raw, re.IGNORECASE)
         if match:
             dia, mes_str, anio = match.groups()
@@ -176,22 +176,40 @@ def normalizar_campos(datos: Dict[str, Any]) -> Dict[str, Any]:
     return datos
 
 
-class ExtractorIAInterface(ABC):
-    @abstractmethod
-    async def extraer_datos_contrato(self, imagen_bytes: bytes) -> Dict[str, Any]:
-        pass
+class IAService:
+    MODELO = "gemini-2.5-flash"
+    MAX_REINTENTOS = 5
+    PAUSA_ENTRE_REINTENTOS = 8
+    PAUSA_ERROR_429 = 30
 
+    _api_keys: List[str] = []
+    _indice_key: int = 0
 
-class GeminiStrategy(ExtractorIAInterface):
-    def __init__(self):
-        self.api_key = os.environ.get("GEMINI_API_KEY", "")
-        self.url = (
-            f"https://generativelanguage.googleapis.com/v1beta/models/"
-            f"gemini-2.0-flash:generateContent?key={self.api_key}"
-        )
-        logger.info("Estrategia Gemini Flash inicializada.")
+    @classmethod
+    def _cargar_keys(cls) -> List[str]:
+        if not cls._api_keys:
+            keys_raw = os.environ.get("GEMINI_API_KEYS", "")
+            cls._api_keys = [k.strip() for k in keys_raw.split(",") if k.strip()]
+            if not cls._api_keys:
+                raise ValueError("No se encontraron API keys en GEMINI_API_KEYS")
+            logger.info(f"Cargadas {len(cls._api_keys)} API keys de Gemini")
+        return cls._api_keys
 
-    async def extraer_datos_contrato(self, imagen_bytes: bytes) -> Dict[str, Any]:
+    @classmethod
+    def _obtener_url(cls) -> str:
+        keys = cls._cargar_keys()
+        key = keys[cls._indice_key % len(keys)]
+        return f"https://generativelanguage.googleapis.com/v1beta/models/{cls.MODELO}:generateContent?key={key}"
+
+    @classmethod
+    def _rotar_key(cls) -> str:
+        keys = cls._cargar_keys()
+        cls._indice_key = (cls._indice_key + 1) % len(keys)
+        logger.info(f"Rotando a API key #{cls._indice_key + 1}/{len(keys)}")
+        return keys[cls._indice_key]
+
+    @staticmethod
+    async def procesar_imagen_contrato(imagen_bytes: bytes) -> Dict[str, Any]:
         contenido = ""
         try:
             imagen_optimizada = preprocesar_imagen(imagen_bytes, max_dim=1600)
@@ -212,115 +230,44 @@ class GeminiStrategy(ExtractorIAInterface):
                 }
             }
 
-            async with httpx.AsyncClient(timeout=60.0) as client:
-                response = await client.post(self.url, json=payload)
-                response.raise_for_status()
-                contenido = response.json()["candidates"][0]["content"]["parts"][0]["text"]
-                logger.info(f"Respuesta de Gemini:\n{contenido}")
-                datos = limpiar_y_parsear_json(contenido)
-                return normalizar_campos(datos)
+            for intento in range(1, IAService.MAX_REINTENTOS + 1):
+                try:
+                    url = IAService._obtener_url()
+                    async with httpx.AsyncClient(timeout=60.0) as client:
+                        response = await client.post(url, json=payload)
 
-        except json.JSONDecodeError:
-            logger.error(f"JSON inválido recibido:\n{contenido}")
-            raise HTTPException(status_code=422, detail="Gemini no pudo estructurar la respuesta.")
+                        if response.status_code == 429:
+                            logger.warning(f"Cuota agotada en key #{IAService._indice_key + 1}. Rotando y esperando {IAService.PAUSA_ERROR_429}s...")
+                            IAService._rotar_key()
+                            await asyncio.sleep(IAService.PAUSA_ERROR_429)
+                            continue
+
+                        response.raise_for_status()
+                        contenido = response.json()["candidates"][0]["content"]["parts"][0]["text"]
+                        logger.info(f"Respuesta de Gemini (intento {intento}):\n{contenido}")
+                        datos = limpiar_y_parsear_json(contenido)
+                        return normalizar_campos(datos)
+
+                except httpx.HTTPStatusError as e:
+                    logger.error(f"Error HTTP {e.response.status_code} en intento {intento}")
+                    if intento < IAService.MAX_REINTENTOS:
+                        IAService._rotar_key()
+                        await asyncio.sleep(IAService.PAUSA_ENTRE_REINTENTOS)
+
+                except httpx.TimeoutException:
+                    logger.warning(f"Timeout en intento {intento}")
+                    if intento < IAService.MAX_REINTENTOS:
+                        await asyncio.sleep(IAService.PAUSA_ENTRE_REINTENTOS)
+
+                except json.JSONDecodeError:
+                    logger.error(f"JSON inválido recibido:\n{contenido}")
+                    raise HTTPException(status_code=422, detail="Gemini no pudo estructurar la respuesta.")
+
+            raise HTTPException(status_code=503, detail="No se pudo procesar la imagen después de múltiples intentos.")
+
+        except HTTPException:
+            raise
         except Exception as e:
             logger.error(f"Error en Gemini: {repr(e)}")
             traceback.print_exc()
             raise HTTPException(status_code=500, detail=f"Error en Gemini API: {repr(e)}")
-
-
-class OllamaStrategy(ExtractorIAInterface):
-    def __init__(self):
-        self.OLLAMA_URL = "http://localhost:11434/api/chat"
-        self.MODEL_NAME = "minicpm-v:8b-2.6-q4_K_M"
-        logger.info(f"Estrategia Ollama inicializada con modelo: {self.MODEL_NAME}")
-
-    async def extraer_datos_contrato(self, imagen_bytes: bytes) -> Dict[str, Any]:
-        contenido = ""
-        try:
-            imagen_optimizada_bytes = preprocesar_imagen(imagen_bytes, max_dim=3000)
-            imagen_b64 = base64.b64encode(imagen_optimizada_bytes).decode('utf-8')
-
-            payload = {
-                "model": self.MODEL_NAME,
-                "messages": [
-                    {
-                        "role": "user",
-                        "content": PROMPT_CONTRATO,
-                        "images": [imagen_b64]
-                    }
-                ],
-                "stream": False,
-                "options": {
-                    "temperature": 0.0
-                }
-            }
-
-            async with httpx.AsyncClient(timeout=1200.0) as client:
-                response = await client.post(self.OLLAMA_URL, json=payload)
-                response.raise_for_status()
-                contenido = response.json()["message"]["content"]
-                logger.info(f"Respuesta de {self.MODEL_NAME}:\n{contenido}")
-                datos = limpiar_y_parsear_json(contenido)
-                return normalizar_campos(datos)
-
-        except json.JSONDecodeError:
-            logger.error(f"JSON inválido recibido:\n{contenido}")
-            raise HTTPException(status_code=422, detail="La IA no pudo estructurar la respuesta.")
-        except Exception as e:
-            logger.error(f"Error en procesamiento Ollama: {repr(e)}")
-            traceback.print_exc()
-            raise HTTPException(status_code=500, detail=f"Error en inferencia local: {repr(e)}")
-
-
-class MockStrategy(ExtractorIAInterface):
-    async def extraer_datos_contrato(self, imagen_bytes: bytes) -> Dict[str, Any]:
-        import asyncio
-        await asyncio.sleep(1)
-        return {
-            "fecha": "2025-07-25",
-            "contratante_nombre": "VANESA ALEJANDRA MEDINA FLORES",
-            "contratante_dni": "18112990",
-            "contratante_telefono": "970248382",
-            "fallecido_nombre": "ZORAIDA CAMPOS NORIEGA",
-            "direccion_velacion": "Psj. Los Jilgueros 177 Urb. Los Pinos",
-            "tipo_pago": "directo",
-            "ataud_modelo": "Ataúd Americano Blanco con Adornos",
-            "ataud_color": "Blanco",
-            "capilla_modelo": "Capilla Ardiente Iluminada",
-            "ids_vehiculos_detectados": ["porta_ataud"],
-            "cantidad_cargadores": 4,
-            "costo": 1750.00
-        }
-
-
-# ─────────────────────────────────────────────
-# MODO ACTIVO: gemini (recomendado)
-# Cambia a "ollama" para usar modelo local
-# Cambia a "mock" para desarrollo sin inferencia
-# ─────────────────────────────────────────────
-EXTRACTOR_MODE = os.environ.get("EXTRACTOR_MODE", "gemini").lower()
-
-_instancias: Dict[str, ExtractorIAInterface] = {}
-
-
-def obtener_extractor_ia() -> ExtractorIAInterface:
-    global _instancias
-    if EXTRACTOR_MODE not in _instancias:
-        if EXTRACTOR_MODE == "mock":
-            logger.info("Usando MockStrategy")
-            _instancias[EXTRACTOR_MODE] = MockStrategy()
-        elif EXTRACTOR_MODE == "gemini":
-            logger.info("Usando GeminiStrategy")
-            _instancias[EXTRACTOR_MODE] = GeminiStrategy()
-        else:
-            logger.info("Usando OllamaStrategy")
-            _instancias[EXTRACTOR_MODE] = OllamaStrategy()
-    return _instancias[EXTRACTOR_MODE]
-
-
-class IAService:
-    @staticmethod
-    async def procesar_imagen_contrato(imagen_bytes: bytes) -> Dict[str, Any]:
-        extractor = obtener_extractor_ia()
-        return await extractor.extraer_datos_contrato(imagen_bytes)
