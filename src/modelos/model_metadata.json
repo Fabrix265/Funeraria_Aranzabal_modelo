@@ -1,0 +1,48 @@
+{
+  "targets": [
+    "servicios_totales",
+    "monto_total"
+  ],
+  "models": [
+    "sarima_servicios_totales",
+    "prophet_servicios_totales",
+    "xgboost_servicios_totales",
+    "lgbm_servicios_totales",
+    "lstm_servicios_totales",
+    "scaler_servicios_totales",
+    "ets_servicios_totales",
+    "sarima_monto_total",
+    "prophet_monto_total",
+    "xgboost_monto_total",
+    "lgbm_monto_total",
+    "lstm_monto_total",
+    "scaler_monto_total",
+    "ets_monto_total"
+  ],
+  "train_period": "2022-05 a 2025-02",
+  "test_period": "2025-03 a 2026-02",
+  "train_months": 34,
+  "test_months": 12,
+  "lags_used": [
+    1,
+    2,
+    3,
+    6
+  ],
+  "saved": {
+    "sarima_servicios_totales": "ok",
+    "prophet_servicios_totales": "ok",
+    "xgboost_servicios_totales": "ok",
+    "lgbm_servicios_totales": "ok",
+    "lstm_servicios_totales": "ok",
+    "scaler_servicios_totales": "ok",
+    "ets_servicios_totales": "ok",
+    "sarima_monto_total": "ok",
+    "prophet_monto_total": "ok",
+    "xgboost_monto_total": "ok",
+    "lgbm_monto_total": "ok",
+    "lstm_monto_total": "ok",
+    "scaler_monto_total": "ok",
+    "ets_monto_total": "ok"
+  }
+}

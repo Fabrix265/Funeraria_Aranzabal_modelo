@@ -23,3 +23,5 @@ def read_root():
     return {"message": "El motor local de Moondream mediante Ollama está activo."}
 
 app.include_router(ia_router, prefix="/ia", tags=["Inteligencia Artificial (VLM)"])
+
+#
