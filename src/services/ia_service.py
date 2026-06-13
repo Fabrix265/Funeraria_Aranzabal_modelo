@@ -50,7 +50,7 @@ Detecta si hay descripción escrita en las filas "Carroza" (→ porta_ataud) y "
 Si no hay nada escrito en esas filas, usa [].
 - Para "cantidad_cargadores" lee la fila "Cargadores" de la tabla. Solo acepta 4, 6 o null.
 - Para "fecha" combina día, mes y año escritos en el campo "Trujillo, __ de __ del 20__". Formato YYYY-MM-DD.
-- Para "contratante_dni" lee el campo "Doc. Identidad:" del cuerpo del contrato. Extrae exactamente 8 dígitos. Si no son 8 dígitos usa null.
+- Para "contratante_dni" busca en DOS ubicaciones: 1) El campo "Doc. Identidad:" del cuerpo del contrato, y 2) La sección de firmas abajo a la izquierda donde puede estar escrito el DNI del contratante. Extrae exactamente 8 dígitos de cualquiera de las dos ubicaciones. Si no encuentras 8 dígitos en ninguna, usa null.
 - Para "contratante_telefono" lee el campo "Teléfono:" que está en la misma línea o muy cerca del campo "Señor(a):".
 IGNORA los teléfonos del membrete superior de la empresa (044-679338, 943441226, 980494319, 044-564963).
 - Para "direccion_velacion" lee ÚNICAMENTE el campo etiquetado como "Dirección:" en el cuerpo del contrato.

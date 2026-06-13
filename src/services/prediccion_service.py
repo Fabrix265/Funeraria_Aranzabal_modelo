@@ -218,26 +218,70 @@ class PrediccionService:
     def obtener_distribucion_ataudes() -> list:
         PrediccionService._cargar_modelos()
         dist = PrediccionService._metadata.get("distribucion_ataudes", {})
-        result = []
+        
+        total_historical = 0
+        historical = PrediccionService._metadata.get("historical_data", {}).get("servicios_totales", [])
+        for item in historical:
+            total_historical += item.get("valor", 0)
+        
+        raw_items = []
         for nombre, meses in dist.items():
             if isinstance(meses, dict):
-                promedio = sum(meses.values()) / len(meses) if meses else 0
-                result.append({"nombre": nombre, "proporcion": round(promedio, 4), "proporcion_estacional": meses, "cantidad_estimada": None})
+                peso = sum(meses.values())
+                raw_items.append({"nombre": nombre, "peso": peso, "meses": meses})
             else:
-                result.append({"nombre": nombre, "proporcion": meses, "proporcion_estacional": None, "cantidad_estimada": None})
+                raw_items.append({"nombre": nombre, "peso": meses, "meses": None})
+        
+        total_pesos = sum(item["peso"] for item in raw_items) or 1
+        
+        result = []
+        for item in raw_items:
+            proporcion = item["peso"] / total_pesos
+            meses_dict = item["meses"]
+            meses_normalizados = None
+            if meses_dict:
+                meses_normalizados = {k: round(v / item["peso"], 4) if item["peso"] > 0 else 0 for k, v in meses_dict.items()}
+            result.append({
+                "nombre": item["nombre"],
+                "proporcion": round(proporcion, 4),
+                "proporcion_estacional": meses_normalizados,
+                "cantidad_estimada": round(total_historical * proporcion, 1)
+            })
         return result
 
     @staticmethod
     def obtener_distribucion_capillas() -> list:
         PrediccionService._cargar_modelos()
         dist = PrediccionService._metadata.get("distribucion_capillas", {})
-        result = []
+        
+        total_historical = 0
+        historical = PrediccionService._metadata.get("historical_data", {}).get("servicios_totales", [])
+        for item in historical:
+            total_historical += item.get("valor", 0)
+        
+        raw_items = []
         for nombre, meses in dist.items():
             if isinstance(meses, dict):
-                promedio = sum(meses.values()) / len(meses) if meses else 0
-                result.append({"nombre": nombre, "proporcion": round(promedio, 4), "proporcion_estacional": meses, "cantidad_estimada": None})
+                peso = sum(meses.values())
+                raw_items.append({"nombre": nombre, "peso": peso, "meses": meses})
             else:
-                result.append({"nombre": nombre, "proporcion": meses, "proporcion_estacional": None, "cantidad_estimada": None})
+                raw_items.append({"nombre": nombre, "peso": meses, "meses": None})
+        
+        total_pesos = sum(item["peso"] for item in raw_items) or 1
+        
+        result = []
+        for item in raw_items:
+            proporcion = item["peso"] / total_pesos
+            meses_dict = item["meses"]
+            meses_normalizados = None
+            if meses_dict:
+                meses_normalizados = {k: round(v / item["peso"], 4) if item["peso"] > 0 else 0 for k, v in meses_dict.items()}
+            result.append({
+                "nombre": item["nombre"],
+                "proporcion": round(proporcion, 4),
+                "proporcion_estacional": meses_normalizados,
+                "cantidad_estimada": round(total_historical * proporcion, 1)
+            })
         return result
 
     @staticmethod
