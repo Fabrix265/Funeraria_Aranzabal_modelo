@@ -17,7 +17,7 @@ logger = logging.getLogger("fastapi")
 
 OLLAMA_URL = "http://localhost:11434/api/chat"
 MODELO = "qwen2.5vl:3b"
-MAX_REINTENTOS = 3
+MAX_REINTENTOS = 1
 PAUSA_ENTRE_REINTENTOS = 5
 
 PROMPT_CONTRATO = """Eres un asistente especializado en leer contratos funerarios escaneados.
@@ -186,7 +186,7 @@ class IAService:
     async def procesar_imagen_contrato(imagen_bytes: bytes) -> Dict[str, Any]:
         contenido = ""
         try:
-            imagen_optimizada = preprocesar_imagen(imagen_bytes, max_dim=1600)
+            imagen_optimizada = preprocesar_imagen(imagen_bytes, max_dim=1000)
             imagen_b64 = base64.b64encode(imagen_optimizada).decode("utf-8")
 
             payload = {
@@ -201,7 +201,7 @@ class IAService:
 
             for intento in range(1, MAX_REINTENTOS + 1):
                 try:
-                    async with httpx.AsyncClient(timeout=120.0) as client:
+                    async with httpx.AsyncClient(timeout=900.0) as client:
                         response = await client.post(OLLAMA_URL, json=payload)
                         response.raise_for_status()
 
