@@ -1,15 +1,40 @@
-from fastapi import APIRouter, UploadFile, File, HTTPException
+from fastapi import APIRouter, UploadFile, File, HTTPException, BackgroundTasks
 from src.services.ia_service import IAService
 from src.schemas.ia import TranscripcionContratoOut
+import uuid
 
 ia_router = APIRouter()
 
+tareas: dict = {}
 
-@ia_router.post("/process-contract", response_model=TranscripcionContratoOut, status_code=200)
-async def procesar_contrato_con_ia(file: UploadFile = File(...)):
+
+@ia_router.post("/process-contract", status_code=202)
+async def procesar_contrato_con_ia(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...)
+):
     if not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail=f"Formato invalido ({file.content_type}).")
 
+    tarea_id = str(uuid.uuid4())
+    tareas[tarea_id] = {"estado": "procesando", "resultado": None, "error": None}
     imagen_bytes = await file.read()
-    resultado = await IAService.procesar_imagen_contrato(imagen_bytes)
-    return resultado
+
+    async def procesar():
+        try:
+            resultado = await IAService.procesar_imagen_contrato(imagen_bytes)
+            tareas[tarea_id]["estado"] = "listo"
+            tareas[tarea_id]["resultado"] = resultado
+        except Exception as e:
+            tareas[tarea_id]["estado"] = "error"
+            tareas[tarea_id]["error"] = str(e)
+
+    background_tasks.add_task(procesar)
+    return {"tarea_id": tarea_id}
+
+
+@ia_router.get("/task/{tarea_id}")
+def consultar_tarea(tarea_id: str):
+    if tarea_id not in tareas:
+        raise HTTPException(status_code=404, detail="Tarea no encontrada")
+    return tareas[tarea_id]
