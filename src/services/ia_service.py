@@ -15,7 +15,7 @@ from fastapi import HTTPException
 
 logger = logging.getLogger("fastapi")
 
-OLLAMA_URL = "http://localhost:11434/v1/chat/completions"
+OLLAMA_URL = "http://localhost:11434/api/chat"
 MODELO = "qwen2.5vl:3b"
 MAX_REINTENTOS = 3
 PAUSA_ENTRE_REINTENTOS = 5
@@ -193,10 +193,8 @@ class IAService:
                 "model": MODELO,
                 "messages": [{
                     "role": "user",
-                    "content": [
-                        {"type": "text", "text": PROMPT_CONTRATO},
-                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{imagen_b64}"}}
-                    ]
+                    "content": PROMPT_CONTRATO,
+                    "images": [imagen_b64]
                 }],
                 "stream": False
             }
@@ -208,7 +206,7 @@ class IAService:
                         response.raise_for_status()
 
                         respuesta = response.json()
-                        contenido = respuesta["choices"][0]["message"]["content"]
+                        contenido = respuesta["message"]["content"]
                         logger.info(f"Respuesta de Ollama (intento {intento}):\n{contenido}")
                         datos = limpiar_y_parsear_json(contenido)
                         return normalizar_campos(datos)
