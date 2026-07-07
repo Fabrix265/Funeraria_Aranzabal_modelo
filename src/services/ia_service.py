@@ -4,9 +4,8 @@ import logging
 import base64
 import asyncio
 import traceback
-import os
 import re
-from typing import Dict, Any, List
+from typing import Dict, Any
 import httpx
 
 from PIL import Image, ImageOps, ImageFilter
@@ -15,6 +14,11 @@ Image.MAX_IMAGE_PIXELS = None
 from fastapi import HTTPException
 
 logger = logging.getLogger("fastapi")
+
+OLLAMA_URL = "http://localhost:11434/api/chat"
+MODELO = "qwen2.5vl:3b"
+MAX_REINTENTOS = 1
+PAUSA_ENTRE_REINTENTOS = 5
 
 PROMPT_CONTRATO = """Eres un asistente especializado en leer contratos funerarios escaneados.
 El contrato tiene DOS zonas claramente distintas que NO debes confundir:
@@ -177,97 +181,55 @@ def normalizar_campos(datos: Dict[str, Any]) -> Dict[str, Any]:
 
 
 class IAService:
-    MODELO = "gemini-2.5-flash"
-    MAX_REINTENTOS = 5
-    PAUSA_ENTRE_REINTENTOS = 8
-    PAUSA_ERROR_429 = 30
-
-    _api_keys: List[str] = []
-    _indice_key: int = 0
-
-    @classmethod
-    def _cargar_keys(cls) -> List[str]:
-        if not cls._api_keys:
-            keys_raw = os.environ.get("GEMINI_API_KEYS", "")
-            cls._api_keys = [k.strip() for k in keys_raw.split(",") if k.strip()]
-            if not cls._api_keys:
-                raise ValueError("No se encontraron API keys en GEMINI_API_KEYS")
-            logger.info(f"Cargadas {len(cls._api_keys)} API keys de Gemini")
-        return cls._api_keys
-
-    @classmethod
-    def _obtener_url(cls) -> str:
-        keys = cls._cargar_keys()
-        key = keys[cls._indice_key % len(keys)]
-        return f"https://generativelanguage.googleapis.com/v1beta/models/{cls.MODELO}:generateContent?key={key}"
-
-    @classmethod
-    def _rotar_key(cls) -> str:
-        keys = cls._cargar_keys()
-        cls._indice_key = (cls._indice_key + 1) % len(keys)
-        logger.info(f"Rotando a API key #{cls._indice_key + 1}/{len(keys)}")
-        return keys[cls._indice_key]
 
     @staticmethod
     async def procesar_imagen_contrato(imagen_bytes: bytes) -> Dict[str, Any]:
         contenido = ""
         try:
-            imagen_optimizada = preprocesar_imagen(imagen_bytes, max_dim=1600)
+            imagen_optimizada = preprocesar_imagen(imagen_bytes, max_dim=1000)
             imagen_b64 = base64.b64encode(imagen_optimizada).decode("utf-8")
 
             payload = {
-                "contents": [{
-                    "parts": [
-                        {"text": PROMPT_CONTRATO},
-                        {"inline_data": {
-                            "mime_type": "image/jpeg",
-                            "data": imagen_b64
-                        }}
-                    ]
+                "model": MODELO,
+                "messages": [{
+                    "role": "user",
+                    "content": PROMPT_CONTRATO,
+                    "images": [imagen_b64]
                 }],
-                "generationConfig": {
-                    "temperature": 0.0
-                }
+                "stream": False
             }
 
-            for intento in range(1, IAService.MAX_REINTENTOS + 1):
+            for intento in range(1, MAX_REINTENTOS + 1):
                 try:
-                    url = IAService._obtener_url()
-                    async with httpx.AsyncClient(timeout=60.0) as client:
-                        response = await client.post(url, json=payload)
-
-                        if response.status_code == 429:
-                            logger.warning(f"Cuota agotada en key #{IAService._indice_key + 1}. Rotando y esperando {IAService.PAUSA_ERROR_429}s...")
-                            IAService._rotar_key()
-                            await asyncio.sleep(IAService.PAUSA_ERROR_429)
-                            continue
-
+                    async with httpx.AsyncClient(timeout=900.0) as client:
+                        response = await client.post(OLLAMA_URL, json=payload)
                         response.raise_for_status()
-                        contenido = response.json()["candidates"][0]["content"]["parts"][0]["text"]
-                        logger.info(f"Respuesta de Gemini (intento {intento}):\n{contenido}")
+
+                        respuesta = response.json()
+                        contenido = respuesta["message"]["content"]
+                        logger.info(f"Respuesta de Ollama (intento {intento}):\n{contenido}")
                         datos = limpiar_y_parsear_json(contenido)
                         return normalizar_campos(datos)
 
                 except httpx.HTTPStatusError as e:
                     logger.error(f"Error HTTP {e.response.status_code} en intento {intento}")
-                    if intento < IAService.MAX_REINTENTOS:
-                        IAService._rotar_key()
-                        await asyncio.sleep(IAService.PAUSA_ENTRE_REINTENTOS)
+                    if intento < MAX_REINTENTOS:
+                        await asyncio.sleep(PAUSA_ENTRE_REINTENTOS)
 
                 except httpx.TimeoutException:
                     logger.warning(f"Timeout en intento {intento}")
-                    if intento < IAService.MAX_REINTENTOS:
-                        await asyncio.sleep(IAService.PAUSA_ENTRE_REINTENTOS)
+                    if intento < MAX_REINTENTOS:
+                        await asyncio.sleep(PAUSA_ENTRE_REINTENTOS)
 
                 except json.JSONDecodeError:
                     logger.error(f"JSON inválido recibido:\n{contenido}")
-                    raise HTTPException(status_code=422, detail="Gemini no pudo estructurar la respuesta.")
+                    raise HTTPException(status_code=422, detail="Ollama no pudo estructurar la respuesta.")
 
             raise HTTPException(status_code=503, detail="No se pudo procesar la imagen después de múltiples intentos.")
 
         except HTTPException:
             raise
         except Exception as e:
-            logger.error(f"Error en Gemini: {repr(e)}")
+            logger.error(f"Error en Ollama: {repr(e)}")
             traceback.print_exc()
-            raise HTTPException(status_code=500, detail=f"Error en Gemini API: {repr(e)}")
+            raise HTTPException(status_code=500, detail=f"Error en Ollama: {repr(e)}")
