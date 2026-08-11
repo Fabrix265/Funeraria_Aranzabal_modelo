@@ -22,7 +22,7 @@ async def procesar_contrato_con_ia(
 
     async def procesar():
         try:
-            resultado = await IAService.procesar_imagen_contrato(imagen_bytes)
+            resultado = IAService.procesar_imagen_contrato(imagen_bytes)
             tareas[tarea_id]["estado"] = "listo"
             tareas[tarea_id]["resultado"] = resultado
         except Exception as e:
