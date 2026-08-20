@@ -2,11 +2,11 @@ import io
 import json
 import logging
 import base64
-import asyncio
-import traceback
+import os
 import re
-from typing import Dict, Any
-import httpx
+import time
+import requests
+from typing import Dict, Any, List
 
 from PIL import Image, ImageOps, ImageFilter
 Image.MAX_IMAGE_PIXELS = None
@@ -15,10 +15,11 @@ from fastapi import HTTPException
 
 logger = logging.getLogger("fastapi")
 
-OLLAMA_URL = "http://localhost:11434/api/chat"
-MODELO = "qwen2.5vl:3b"
-MAX_REINTENTOS = 1
-PAUSA_ENTRE_REINTENTOS = 5
+MODELO = "gemini-2.5-flash"
+MAX_REINTENTOS = 5
+PAUSA_ENTRE_REINTENTOS = 8
+PAUSA_ERROR_429 = 30
+
 
 PROMPT_CONTRATO = """Eres un asistente especializado en leer contratos funerarios escaneados.
 El contrato tiene DOS zonas claramente distintas que NO debes confundir:
@@ -81,6 +82,37 @@ Estructura JSON exacta:
 "cantidad_cargadores": null,
 "costo": 0.0
 }"""
+
+
+class RotadorAPIs:
+    def __init__(self, keys: List[str]):
+        if not keys:
+            raise ValueError("Se requiere al menos una API key de Gemini.")
+        self.keys = keys
+        self.indice = 0
+
+    def obtener_url(self) -> str:
+        key = self.keys[self.indice]
+        return f"https://generativelanguage.googleapis.com/v1beta/models/{MODELO}:generateContent?key={key}"
+
+    def rotar(self):
+        self.indice = (self.indice + 1) % len(self.keys)
+        logger.info(f"Rotando a API #{self.indice + 1}/{len(self.keys)}")
+
+    def api_actual(self) -> str:
+        return f"API #{self.indice + 1}/{len(self.keys)}"
+
+
+def _cargar_api_keys() -> List[str]:
+    keys = []
+    for i in range(1, 50):
+        key = os.getenv(f"GOOGLE_API_KEY_{i}", "")
+        if key:
+            keys.append(key)
+    single = os.getenv("GOOGLE_API_KEY", "")
+    if single and single not in keys:
+        keys.insert(0, single)
+    return keys
 
 
 def preprocesar_imagen(imagen_bytes: bytes, max_dim: int = 1600) -> bytes:
@@ -183,53 +215,69 @@ def normalizar_campos(datos: Dict[str, Any]) -> Dict[str, Any]:
 class IAService:
 
     @staticmethod
-    async def procesar_imagen_contrato(imagen_bytes: bytes) -> Dict[str, Any]:
-        contenido = ""
-        try:
-            imagen_optimizada = preprocesar_imagen(imagen_bytes, max_dim=1000)
-            imagen_b64 = base64.b64encode(imagen_optimizada).decode("utf-8")
+    def procesar_imagen_contrato(imagen_bytes: bytes) -> Dict[str, Any]:
+        api_keys = _cargar_api_keys()
+        if not api_keys:
+            raise HTTPException(status_code=500, detail="No se configuraron API keys de Gemini en .env")
 
-            payload = {
-                "model": MODELO,
-                "messages": [{
-                    "role": "user",
-                    "content": PROMPT_CONTRATO,
-                    "images": [imagen_b64]
-                }],
-                "stream": False
-            }
+        rotador = RotadorAPIs(api_keys)
 
-            for intento in range(1, MAX_REINTENTOS + 1):
-                try:
-                    async with httpx.AsyncClient(timeout=900.0) as client:
-                        response = await client.post(OLLAMA_URL, json=payload)
-                        response.raise_for_status()
+        imagen_optimizada = preprocesar_imagen(imagen_bytes, max_dim=1000)
+        imagen_b64 = base64.b64encode(imagen_optimizada).decode("utf-8")
 
-                        respuesta = response.json()
-                        contenido = respuesta["message"]["content"]
-                        logger.info(f"Respuesta de Ollama (intento {intento}):\n{contenido}")
-                        datos = limpiar_y_parsear_json(contenido)
-                        return normalizar_campos(datos)
+        payload = {
+            "contents": [{
+                "parts": [
+                    {"text": PROMPT_CONTRATO},
+                    {"inline_data": {"mime_type": "image/jpeg", "data": imagen_b64}}
+                ]
+            }]
+        }
 
-                except httpx.HTTPStatusError as e:
-                    logger.error(f"Error HTTP {e.response.status_code} en intento {intento}")
+        for intento in range(1, MAX_REINTENTOS + 1):
+            try:
+                logger.info(f"Intento {intento}/{MAX_REINTENTOS} con {rotador.api_actual()}...")
+                response = requests.post(
+                    rotador.obtener_url(),
+                    headers={"Content-Type": "application/json"},
+                    json=payload,
+                    timeout=120
+                )
+
+                if response.status_code == 429:
+                    logger.warning(f"Cuota agotada en {rotador.api_actual()}. Rotando y esperando {PAUSA_ERROR_429}s...")
+                    rotador.rotar()
+                    time.sleep(PAUSA_ERROR_429)
+                    continue
+
+                if response.status_code != 200:
+                    logger.error(f"Error HTTP {response.status_code}: {response.text[:200]}")
                     if intento < MAX_REINTENTOS:
-                        await asyncio.sleep(PAUSA_ENTRE_REINTENTOS)
+                        rotador.rotar()
+                        time.sleep(PAUSA_ENTRE_REINTENTOS)
+                    continue
 
-                except httpx.TimeoutException:
-                    logger.warning(f"Timeout en intento {intento}")
-                    if intento < MAX_REINTENTOS:
-                        await asyncio.sleep(PAUSA_ENTRE_REINTENTOS)
+                respuesta = response.json()
+                contenido = respuesta["candidates"][0]["content"]["parts"][0]["text"]
+                logger.info(f"Respuesta de Gemini ({rotador.api_actual()}, intento {intento}):\n{contenido[:300]}")
 
-                except json.JSONDecodeError:
-                    logger.error(f"JSON inválido recibido:\n{contenido}")
-                    raise HTTPException(status_code=422, detail="Ollama no pudo estructurar la respuesta.")
+                datos = limpiar_y_parsear_json(contenido)
+                return normalizar_campos(datos)
 
-            raise HTTPException(status_code=503, detail="No se pudo procesar la imagen después de múltiples intentos.")
+            except requests.exceptions.Timeout:
+                logger.warning(f"Timeout en intento {intento}")
+                if intento < MAX_REINTENTOS:
+                    rotador.rotar()
+                    time.sleep(PAUSA_ENTRE_REINTENTOS)
 
-        except HTTPException:
-            raise
-        except Exception as e:
-            logger.error(f"Error en Ollama: {repr(e)}")
-            traceback.print_exc()
-            raise HTTPException(status_code=500, detail=f"Error en Ollama: {repr(e)}")
+            except json.JSONDecodeError:
+                logger.error(f"JSON inválido recibido:\n{contenido[:500] if contenido else 'vacío'}")
+                raise HTTPException(status_code=422, detail="Gemini no pudo estructurar la respuesta como JSON válido.")
+
+            except Exception as e:
+                logger.error(f"Error inesperado en intento {intento}: {repr(e)}")
+                if intento < MAX_REINTENTOS:
+                    rotador.rotar()
+                    time.sleep(PAUSA_ENTRE_REINTENTOS)
+
+        raise HTTPException(status_code=503, detail="No se pudo procesar la imagen después de múltiples intentos con todas las API keys.")

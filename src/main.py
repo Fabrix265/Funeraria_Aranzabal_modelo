@@ -6,8 +6,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 app = FastAPI(
-    title="Servicio de Extracción AI con Ollama",
-    version="3.0.0"
+    title="Servicio de Extracción AI con Gemini",
+    version="4.0.0"
 )
 
 app.add_middleware(
@@ -21,7 +21,7 @@ app.add_middleware(
 
 @app.get("/")
 def read_root():
-    return {"message": "API de extracción de contratos con Ollama activa."}
+    return {"message": "API de extracción de contratos con Gemini activa."}
 
 app.include_router(ia_router, prefix="/ia", tags=["Inteligencia Artificial - Extracción de Contratos"])
 app.include_router(prediccion_router, prefix="/predictions", tags=["Predicciones Temporales"])
