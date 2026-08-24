@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from src.routers.ia_router import ia_router
-from src.routers.prediccion_router import prediccion_router
+from src.routers.demanda_router import demanda_router
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -21,9 +21,7 @@ app.add_middleware(
 
 @app.get("/")
 def read_root():
-    return {"message": "API de extracción de contratos con Gemini activa."}
+    return {"message": "API de extraccion de contratos con Gemini activa."}
 
-app.include_router(ia_router, prefix="/ia", tags=["Inteligencia Artificial - Extracción de Contratos"])
-app.include_router(prediccion_router, prefix="/predictions", tags=["Predicciones Temporales"])
-
-#
+app.include_router(ia_router, prefix="/ia", tags=["Inteligencia Artificial - Extraccion de Contratos"])
+app.include_router(demanda_router, prefix="/predictions", tags=["Prediccion de Demanda"])

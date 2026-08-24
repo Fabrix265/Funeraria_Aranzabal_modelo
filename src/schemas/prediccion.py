@@ -76,3 +76,39 @@ class DistribucionRequest(BaseModel):
     target: TargetEnum = Field(..., description="Variable objetivo a predecir")
     mes_inicio: str = Field(..., description="Mes de inicio (YYYY-MM)")
     mes_fin: str = Field(..., description="Mes de fin (YYYY-MM)")
+
+
+class DemandaRequest(BaseModel):
+    stock_actual: Optional[Dict[str, int]] = Field(
+        None,
+        description="Stock actual por categoría (ej: {\"Lincoln\": 5, \"Americano\": 10}). Si se omite, alertas_reorden vendrá vacío."
+    )
+    meses: int = Field(6, ge=1, le=24, description="Número de meses a predecir (1-24)")
+
+
+class AlertaReorden(BaseModel):
+    categoria: str
+    stock_actual: int
+    demanda_predicha: float
+    unidades_a_comprar: float
+
+
+class DemandaCategoria(BaseModel):
+    categoria: str
+    cantidad_predicha: float
+    precio_promedio: float
+    monto_esperado: float
+
+
+class DesgloseModelo(BaseModel):
+    modelo: str
+    cantidad: float
+
+
+class DemandaResponse(BaseModel):
+    periodo_inicio: str
+    meses: int
+    demanda_por_categoria: List[DemandaCategoria]
+    desglose_por_modelo: Dict[str, List[DesgloseModelo]]
+    monto_esperado_total: float
+    alertas_reorden: List[AlertaReorden]
