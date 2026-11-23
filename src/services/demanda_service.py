@@ -13,6 +13,10 @@ class DemandaService:
     _modelo = None
     _metadata: Dict[str, Any] = {}
     _cargado: bool = False
+    # Green software: el modelo es estático (no se reentrena en línea), por lo que el
+    # pronóstico para un mismo horizonte siempre es idéntico. Se memoriza por número de
+    # meses (máx. 24 entradas) para no repetir inferencias redundantes.
+    _cache_pronostico: Dict[int, Dict[str, float]] = {}
     _PATH_MODELOS = os.path.join(os.path.dirname(os.path.dirname(__file__)), "modelos")
 
     @classmethod
@@ -65,19 +69,18 @@ class DemandaService:
         return np.array([row])
 
     @staticmethod
-    def predecir(stock_actual: Optional[Dict[str, int]] = None, meses: int = 6) -> dict:
-        DemandaService._cargar_modelo()
+    def _pronosticar_demanda(meses: int) -> Dict[str, float]:
+        cache = DemandaService._cache_pronostico
+        if meses in cache:
+            return cache[meses]
 
         modelo = DemandaService._modelo
         metadata = DemandaService._metadata
         cat_features = metadata.get("cat_features", [])
-        precio_promedio = metadata.get("precio_promedio_categoria", {})
-        proporciones = metadata.get("proporciones_modelo_especifico", {})
 
         ultimo_periodo = metadata.get("ultimo_periodo_entrenado", "2026-02")
         year, month = map(int, ultimo_periodo.split("-"))
 
-        num_categorias = len(cat_features)
         num_periodos_entrenamiento = metadata.get("num_periodos_entrenamiento", 40)
         t_base = num_periodos_entrenamiento
 
@@ -115,6 +118,23 @@ class DemandaService:
 
             predicciones_por_categoria[cat] = preds
             demanda_por_categoria[cat] = round(np.mean(preds), 1)
+
+        cache[meses] = demanda_por_categoria
+        return demanda_por_categoria
+
+    @staticmethod
+    def predecir(stock_actual: Optional[Dict[str, int]] = None, meses: int = 6) -> dict:
+        DemandaService._cargar_modelo()
+
+        metadata = DemandaService._metadata
+        precio_promedio = metadata.get("precio_promedio_categoria", {})
+        proporciones = metadata.get("proporciones_modelo_especifico", {})
+
+        ultimo_periodo = metadata.get("ultimo_periodo_entrenado", "2026-02")
+        year, month = map(int, ultimo_periodo.split("-"))
+
+        # Copia para que los cálculos posteriores no modifiquen el valor memorizado
+        demanda_por_categoria = dict(DemandaService._pronosticar_demanda(meses))
 
         desglose_por_modelo = {}
         for cat, cantidad in demanda_por_categoria.items():
